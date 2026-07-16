@@ -19,7 +19,7 @@ AVALIADORAS_MAX = 12  # Divisão exata: 12 para cada uma das 3 avaliadoras
 METAS_COTAS = {
     "Crítica": 17,        # 12 áreas críticas aleatórias + 5 fixas obrigatórias
     "Semi-crítica": 10,   # Ambulatórios, Banheiros, etc.
-    "Não-crítica": 9      # Áreas Administrativas (Atualizado para 9)
+    "Não-crítica": 9      # Áreas Administrativas
 }
 
 AREAS_FIXAS_OBRIGATORIAS = [
@@ -50,6 +50,17 @@ DADOS_PADRAO = {
         "Semi-crítica", "Semi-crítica", "Semi-crítica", "Semi-crítica", "Semi-crítica",
         "Não-crítica", "Não-crítica", "Não-crítica"
     ]
+}
+
+# Dicionário auxiliar para converter Subtipos antigos em Criticidades se o campo estiver ausente
+MAPEAMENTO_SUBTIPO_CRITICIDADE = {
+    "Fixo": "Crítica",
+    "UTI": "Crítica",
+    "Enfermaria": "Crítica",
+    "Ambulatorio": "Semi-crítica",
+    "Banheiros": "Semi-crítica",
+    "Procedimento": "Semi-crítica",
+    "Administrativa": "Não-crítica"
 }
 
 # ==============================================================================
@@ -87,15 +98,24 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 def carregar_historico_firebase():
-    """Busca os dados e injeta dinamicamente a coluna 'Competencia' de auditoria."""
+    """Busca os dados e injeta dinamicamente as colunas necessárias para auditoria."""
     docs = db.collection("historico").stream()
     lista_dados = [doc.to_dict() for doc in docs]
     
     if lista_dados:
         df = pd.DataFrame(lista_dados)
-        if "Criticidade" in df.columns:
-            df["Criticidade"] = df["Criticidade"].replace({"Procedimento": "Semi-crítica", "Administrativa": "Não-crítica"})
         
+        # Garante a existência da coluna Criticidade (ajuste para registros antigos)
+        if "Criticidade" not in df.columns:
+            if "Subtipo" in df.columns:
+                df["Criticidade"] = df["Subtipo"].map(MAPEAMENTO_SUBTIPO_CRITICIDADE).fillna("Não-crítica")
+            else:
+                df["Criticidade"] = "Não-crítica"
+        else:
+            # Caso a coluna exista mas tenha valores nulos ou termos legados
+            df["Criticidade"] = df["Criticidade"].fillna("Não-crítica")
+            df["Criticidade"] = df["Criticidade"].replace({"Procedimento": "Semi-crítica", "Administrativa": "Não-crítica"})
+            
         df["Competência"] = df["Data"].apply(obter_mes_competencia)
         return df
         
@@ -139,12 +159,14 @@ df_hist = carregar_historico_firebase()
 data_hora_atual_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 competencia_atual = obter_mes_competencia(data_hora_atual_str)
 
+# Filtra o histórico focando apenas no ciclo atual
 df_mes = df_hist[df_hist["Competência"] == competencia_atual] if not df_hist.empty else pd.DataFrame()
 
 total_mes = len(df_mes)
 areas_sorteadas_no_mes = df_mes["Area"].values if not df_mes.empty else []
 fixas_sorteadas = [area for area in AREAS_FIXAS_OBRIGATORIAS if area in areas_sorteadas_no_mes]
 
+# Contadores de cota seguros
 qtd_atual_cota = {
     "Crítica": len(df_mes[df_mes["Criticidade"] == "Crítica"]) if not df_mes.empty else 0,
     "Semi-crítica": len(df_mes[df_mes["Criticidade"] == "Semi-crítica"]) if not df_mes.empty else 0,
@@ -168,8 +190,10 @@ contagem_avaliadoras = {av: 0 for av in AVALIADORAS_TODAS}
 acompanhamentos_sup = {av: 0 for av in AVALIADORAS_TODAS}
 if not df_mes.empty:
     for av in AVALIADORAS_TODAS:
-        contagem_avaliadoras[av] = len(df_mes[df_mes["Avaliador"] == av])
-        acompanhamentos_sup[av] = len(df_mes[(df_mes["Avaliador"] == av) & (df_mes["Supervisor_Presente"] == "Sim")])
+        if "Avaliador" in df_mes.columns:
+            contagem_avaliadoras[av] = len(df_mes[df_mes["Avaliador"] == av])
+        if "Avaliador" in df_mes.columns and "Supervisor_Presente" in df_mes.columns:
+            acompanhamentos_sup[av] = len(df_mes[(df_mes["Avaliador"] == av) & (df_mes["Supervisor_Presente"] == "Sim")])
 
 # ==============================================================================
 # 6. MOTOR DE LÓGICA DE SORTEIO

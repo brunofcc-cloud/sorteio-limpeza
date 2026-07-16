@@ -105,16 +105,17 @@ def carregar_historico_firebase():
     if lista_dados:
         df = pd.DataFrame(lista_dados)
         
-        # Garante a existência da coluna Criticidade (ajuste para registros antigos)
+        # 1. Se a coluna 'Criticidade' não existir de jeito nenhum no df, cria ela vazia
         if "Criticidade" not in df.columns:
-            if "Subtipo" in df.columns:
-                df["Criticidade"] = df["Subtipo"].map(MAPEAMENTO_SUBTIPO_CRITICIDADE).fillna("Não-crítica")
-            else:
-                df["Criticidade"] = "Não-crítica"
-        else:
-            # Caso a coluna exista mas tenha valores nulos ou termos legados
-            df["Criticidade"] = df["Criticidade"].fillna("Não-crítica")
-            df["Criticidade"] = df["Criticidade"].replace({"Procedimento": "Semi-crítica", "Administrativa": "Não-crítica"})
+            df["Criticidade"] = None
+            
+        # 2. Se houver valores nulos (NaN) na Criticidade, tenta mapear usando o Subtipo
+        if "Subtipo" in df.columns:
+            df["Criticidade"] = df["Criticidade"].fillna(df["Subtipo"].map(MAPEAMENTO_SUBTIPO_CRITICIDADE))
+            
+        # 3. Qualquer nulo restante ou termos antigos de transição são tratados
+        df["Criticidade"] = df["Criticidade"].fillna("Não-crítica")
+        df["Criticidade"] = df["Criticidade"].replace({"Procedimento": "Semi-crítica", "Administrativa": "Não-crítica"})
             
         df["Competência"] = df["Data"].apply(obter_mes_competencia)
         return df

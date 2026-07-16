@@ -30,7 +30,7 @@ AREAS_FIXAS_OBRIGATORIAS = [
     "UER Pediatrica"
 ]
 
-# Dados de contingência caso o usuário não faça o upload da planilha
+# Dados de contingência caso o banco esteja vazio e não tenha planilha enviada
 DADOS_PADRAO = {
     "Area": [
         "Divisão de Nutrição Dietética", "Centro Cirúrgico Central", "Centro Cirúrgico Ambulatorial", "UER", "UER Pediatrica",
@@ -126,6 +126,28 @@ def salvar_no_firebase(dados_sorteio):
     id_unico = datetime.now().strftime("%Y%m%d_%H%M%S")
     db.collection("historico").document(id_unico).set(dados_sorteio)
 
+# --- FUNÇÕES DE PERSISTÊNCIA DA BASE DE DADOS DE ÁREAS ---
+def carregar_areas_do_firebase():
+    """Tenta buscar a planilha salva no Firebase. Se não achar, usa os DADOS_PADRAO."""
+    try:
+        doc_ref = db.collection("configuracoes").document("areas")
+        doc = doc_ref.get()
+        if doc.exists:
+            dados = doc.to_dict()
+            if "lista" in dados:
+                return pd.DataFrame(dados["lista"])
+    except Exception:
+        pass
+    return pd.DataFrame(DADOS_PADRAO)
+
+def salvar_areas_no_firebase(df):
+    """Salva a planilha como um único documento otimizado para economizar leituras/gravações."""
+    colunas_obrigatorias = ["Area", "Subtipo", "Criticidade"]
+    # Filtra apenas as colunas necessárias e limpa valores nulos
+    df_filtrado = df[colunas_obrigatorias].dropna(subset=["Area"]).copy()
+    dados_dict = df_filtrado.to_dict(orient="records")
+    db.collection("configuracoes").document("areas").set({"lista": dados_dict})
+
 # ==============================================================================
 # 4. INTERFACE E BARRA LATERAL (STREAMLIT)
 # ==============================================================================
@@ -140,18 +162,35 @@ for av in AVALIADORAS_TODAS:
     if st.sidebar.checkbox(f"👤 {av} está Disponível", value=True, key=f"presenca_{av}"):
         avaliadoras_ativas.append(av)
 
-# Painel B: Upload da Base de Dados
+# Painel B: Upload e Persistência da Base de Dados
 st.sidebar.markdown("---")
 st.sidebar.header("📁 Base de Dados")
-arquivo_upload = st.sidebar.file_uploader("Suba a planilha de áreas (Colunas: Area, Subtipo, Criticidade)", type=["csv", "xlsx"])
+
+# Carrega primeiro o que estiver salvo no banco
+df_areas = carregar_areas_do_firebase()
+
+arquivo_upload = st.sidebar.file_uploader("Suba uma nova planilha para atualizar (Colunas: Area, Subtipo, Criticidade)", type=["csv", "xlsx"])
 
 if arquivo_upload is not None:
-    df_areas = pd.read_csv(arquivo_upload) if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
-else:
-    df_areas = pd.DataFrame(DADOS_PADRAO)
-
-if "Criticidade" not in df_areas.columns:
-    df_areas["Criticidade"] = "Não-crítica"
+    # Se o usuário enviou um novo arquivo, lê temporariamente
+    df_novo = pd.read_csv(arquivo_upload) if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
+    
+    # Valida as colunas mínimas
+    if "Area" in df_novo.columns and "Subtipo" in df_novo.columns:
+        if "Criticidade" not in df_novo.columns:
+            df_novo["Criticidade"] = df_novo["Subtipo"].map(MAPEAMENTO_SUBTIPO_CRITICIDADE).fillna("Não-crítica")
+            
+        st.sidebar.warning("⚠️ Nova planilha detectada na memória temporária!")
+        
+        # Botão para tornar o arquivo definitivo no Firebase
+        if st.sidebar.button("💾 Salvar Base no Banco de Dados", type="primary"):
+            salvar_areas_no_firebase(df_novo)
+            st.sidebar.success("✅ Salvo com sucesso no Firebase!")
+            st.rerun()
+            
+        df_areas = df_novo
+    else:
+        st.sidebar.error("A planilha precisa ter pelo menos as colunas 'Area' e 'Subtipo'!")
 
 # ==============================================================================
 # 5. PROCESSAMENTO DE METAS (JANELA DO DIA 21 AO DIA 20)

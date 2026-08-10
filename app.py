@@ -11,7 +11,7 @@ from firebase_admin import credentials, firestore
 AVALIADORAS_TODAS = ["Fatima", "Lindalva", "Rosana"]
 SUPERVISOR_MAX_POR_PESSOA = 4
 
-# Metas Globais do Contrato (Atualizado para 36 no total e 12 por pessoa)
+# Metas Globais do Contrato (36 no total e 12 por pessoa)
 TOTAL_AVALIACOES_MES = 36
 AVALIADORAS_MAX = 12  # Divisão exata: 12 para cada uma das 3 avaliadoras
 
@@ -30,7 +30,7 @@ AREAS_FIXAS_OBRIGATORIAS = [
     "UER Pediatrica"
 ]
 
-# Dados de contingência caso o banco esteja vazio e não tenha planilha enviada
+# Dados de contingência
 DADOS_PADRAO = {
     "Area": [
         "Divisão de Nutrição Dietética", "Centro Cirúrgico Central", "Centro Cirúrgico Ambulatorial", "UER", "UER Pediatrica",
@@ -52,7 +52,7 @@ DADOS_PADRAO = {
     ]
 }
 
-# Dicionário auxiliar para converter Subtipos antigos em Criticidades se o campo estiver ausente
+# Dicionário auxiliar de mapeamento
 MAPEAMENTO_SUBTIPO_CRITICIDADE = {
     "Fixo": "Crítica",
     "UTI": "Crítica",
@@ -69,8 +69,7 @@ MAPEAMENTO_SUBTIPO_CRITICIDADE = {
 def obter_mes_competencia(data_str):
     """
     Calcula a competência fiscal baseada no dia 20 de cada mês.
-    Exemplo: 2026-06-21 vira '2026-07' (Mês subsequente)
-             2026-07-20 continua '2026-07' (Mês atual)
+    Exemplo: 2026-06-21 vira '2026-07'
     """
     dt = datetime.strptime(data_str, "%Y-%m-%d %H:%M")
     if dt.day >= 21:
@@ -105,15 +104,12 @@ def carregar_historico_firebase():
     if lista_dados:
         df = pd.DataFrame(lista_dados)
         
-        # 1. Se a coluna 'Criticidade' não existir de jeito nenhum no df, cria ela vazia
         if "Criticidade" not in df.columns:
             df["Criticidade"] = None
             
-        # 2. Se houver valores nulos (NaN) na Criticidade, tenta mapear usando o Subtipo
         if "Subtipo" in df.columns:
             df["Criticidade"] = df["Criticidade"].fillna(df["Subtipo"].map(MAPEAMENTO_SUBTIPO_CRITICIDADE))
             
-        # 3. Qualquer nulo restante ou termos antigos de transição são tratados
         df["Criticidade"] = df["Criticidade"].fillna("Não-crítica")
         df["Criticidade"] = df["Criticidade"].replace({"Procedimento": "Semi-crítica", "Administrativa": "Não-crítica"})
             
@@ -126,7 +122,6 @@ def salvar_no_firebase(dados_sorteio):
     id_unico = datetime.now().strftime("%Y%m%d_%H%M%S")
     db.collection("historico").document(id_unico).set(dados_sorteio)
 
-# --- FUNÇÕES DE PERSISTÊNCIA DA BASE DE DADOS DE ÁREAS ---
 def carregar_areas_do_firebase():
     """Tenta buscar a planilha salva no Firebase. Se não achar, usa os DADOS_PADRAO."""
     try:
@@ -141,9 +136,8 @@ def carregar_areas_do_firebase():
     return pd.DataFrame(DADOS_PADRAO)
 
 def salvar_areas_no_firebase(df):
-    """Salva a planilha como um único documento otimizado para economizar leituras/gravações."""
+    """Salva a planilha no Firebase."""
     colunas_obrigatorias = ["Area", "Subtipo", "Criticidade"]
-    # Filtra apenas as colunas necessárias e limpa valores nulos
     df_filtrado = df[colunas_obrigatorias].dropna(subset=["Area"]).copy()
     dados_dict = df_filtrado.to_dict(orient="records")
     db.collection("configuracoes").document("areas").set({"lista": dados_dict})
@@ -166,23 +160,19 @@ for av in AVALIADORAS_TODAS:
 st.sidebar.markdown("---")
 st.sidebar.header("📁 Base de Dados")
 
-# Carrega primeiro o que estiver salvo no banco
 df_areas = carregar_areas_do_firebase()
 
 arquivo_upload = st.sidebar.file_uploader("Suba uma nova planilha para atualizar (Colunas: Area, Subtipo, Criticidade)", type=["csv", "xlsx"])
 
 if arquivo_upload is not None:
-    # Se o usuário enviou um novo arquivo, lê temporariamente
     df_novo = pd.read_csv(arquivo_upload) if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
     
-    # Valida as colunas mínimas
     if "Area" in df_novo.columns and "Subtipo" in df_novo.columns:
         if "Criticidade" not in df_novo.columns:
             df_novo["Criticidade"] = df_novo["Subtipo"].map(MAPEAMENTO_SUBTIPO_CRITICIDADE).fillna("Não-crítica")
             
         st.sidebar.warning("⚠️ Nova planilha detectada na memória temporária!")
         
-        # Botão para tornar o arquivo definitivo no Firebase
         if st.sidebar.button("💾 Salvar Base no Banco de Dados", type="primary"):
             salvar_areas_no_firebase(df_novo)
             st.sidebar.success("✅ Salvo com sucesso no Firebase!")
@@ -193,27 +183,25 @@ if arquivo_upload is not None:
         st.sidebar.error("A planilha precisa ter pelo menos as colunas 'Area' e 'Subtipo'!")
 
 # ==============================================================================
-# 5. PROCESSAMENTO DE METAS (JANELA DO DIA 21 AO DIA 20)
+# 5. PROCESSAMENTO DE METAS E DADOS LOCAIS
 # ==============================================================================
 df_hist = carregar_historico_firebase()
 data_hora_atual_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 competencia_atual = obter_mes_competencia(data_hora_atual_str)
 
-# Filtra o histórico focando apenas no ciclo atual
 df_mes = df_hist[df_hist["Competência"] == competencia_atual] if not df_hist.empty else pd.DataFrame()
 
 total_mes = len(df_mes)
 areas_sorteadas_no_mes = df_mes["Area"].values if not df_mes.empty else []
 fixas_sorteadas = [area for area in AREAS_FIXAS_OBRIGATORIAS if area in areas_sorteadas_no_mes]
 
-# Contadores de cota seguros
 qtd_atual_cota = {
     "Crítica": len(df_mes[df_mes["Criticidade"] == "Crítica"]) if not df_mes.empty else 0,
     "Semi-crítica": len(df_mes[df_mes["Criticidade"] == "Semi-crítica"]) if not df_mes.empty else 0,
     "Não-crítica": len(df_mes[df_mes["Criticidade"] == "Não-crítica"]) if not df_mes.empty else 0
 }
 
-# Exibição das estatísticas
+# Estatísticas na Barra Lateral
 st.sidebar.markdown(f"### 📊 Ciclo de Fechamento: `{competencia_atual}`")
 st.sidebar.info("Ciclo vigente: do dia 21 do mês anterior até o dia 20 do mês atual.")
 st.sidebar.metric("Progresso do Ciclo", f"{total_mes} / {TOTAL_AVALIACOES_MES}")
@@ -236,82 +224,158 @@ if not df_mes.empty:
             acompanhamentos_sup[av] = len(df_mes[(df_mes["Avaliador"] == av) & (df_mes["Supervisor_Presente"] == "Sim")])
 
 # ==============================================================================
-# 6. MOTOR DE LÓGICA DE SORTEIO
+# 6. ABAS DA APLICAÇÃO (SORTEIO / PAINEL DA EQUIPE / HISTÓRICO)
 # ==============================================================================
-st.subheader("🎲 Sorteio Inteligente do Dia")
+aba_sorteio, aba_painel, aba_historico = st.tabs([
+    "🎲 Realizar Sorteio", 
+    "📊 Painel de Vistorias da Equipe", 
+    "📜 Histórico Geral"
+])
 
-if st.button("Realizar Sorteio", type="primary"):
-    disponiveis_hoje = [av for av in avaliadoras_ativas if contagem_avaliadoras[av] < AVALIADORAS_MAX]
-    if not disponiveis_hoje:
-        st.error("Limite mensal de sorteios para o ciclo atual atingido pelas avaliadoras ativas!")
-        st.stop()
-    avaliadora_sorteada = random.choice(disponiveis_hoje)
-    
-    acomp_feitos = acompanhamentos_sup[avaliadora_sorteada]
-    av_restantes = AVALIADORAS_MAX - contagem_avaliadoras[avaliadora_sorteada]
-    acomp_restantes = SUPERVISOR_MAX_POR_PESSOA - acomp_feitos
-    
-    if acomp_restantes <= 0:
-        supervisor_status = "Não"
-    elif acomp_restantes >= av_restantes:
-        supervisor_status = "Sim"
-    else:
-        supervisor_status = "Sim" if random.random() < 0.5 else "Não"
+# ------------------------------------------------------------------------------
+# ABA 1: SORTEIO
+# ------------------------------------------------------------------------------
+with aba_sorteio:
+    st.subheader("🎲 Sorteio Inteligente do Dia")
 
-    vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
-    fixas_pendentes = [area for area in AREAS_FIXAS_OBRIGATORIAS if area not in areas_sorteadas_no_mes]
-    
-    if len(fixas_pendentes) >= vagas_restantes_no_mes and len(fixas_pendentes) > 0:
-        area_escolhida_nome = random.choice(fixas_pendentes)
-        area_sorteada_row = df_areas[df_areas["Area"] == area_escolhida_nome].iloc[0]
-    else:
-        areas_disponiveis_pool = df_areas[~df_areas["Area"].isin(areas_sorteadas_no_mes)]
-        if areas_disponiveis_pool.empty:
-            areas_disponiveis_pool = df_areas
-            
-        lista_final_sorteio = []
-        for _, row in areas_disponiveis_pool.iterrows():
-            crit = row["Criticidade"]
-            if row["Area"] in fixas_pendentes:
-                lista_final_sorteio.append(row)
-            elif crit in METAS_COTAS and qtd_atual_cota[crit] < METAS_COTAS[crit]:
-                lista_final_sorteio.append(row)
-                
-        if not lista_final_sorteio:
-            st.warning("Todas as cotas do ciclo CADTERC atual foram preenchidas!")
+    if st.button("Realizar Sorteio", type="primary"):
+        disponiveis_hoje = [av for av in avaliadoras_ativas if contagem_avaliadoras[av] < AVALIADORAS_MAX]
+        if not disponiveis_hoje:
+            st.error("Limite mensal de sorteios para o ciclo atual atingido pelas avaliadoras ativas!")
             st.stop()
-            
-        area_sorteada_row = random.choice(lista_final_sorteio)
+        avaliadora_sorteada = random.choice(disponiveis_hoje)
         
-    # ==============================================================================
-    # 7. EXIBIÇÃO E PERSISTÊNCIA DOS DADOS
-    # ==============================================================================
-    st.success("🎉 Sorteio Concluído!")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric(label="📍 Área Sorteada", value=area_sorteada_row["Area"])
-        st.caption(f"Tipo: {area_sorteada_row['Subtipo']} | Classificação: {area_sorteada_row['Criticidade']}")
-    with c2:
-        st.metric(label="👤 Avaliador(a)", value=avaliadora_sorteada)
-        st.markdown(f"**Acompanhamento do Supervisor:** {'👀 SIM' if supervisor_status == 'Sim' else '❌ Não'}")
+        acomp_feitos = acompanhamentos_sup[avaliadora_sorteada]
+        av_restantes = AVALIADORAS_MAX - contagem_avaliadoras[avaliadora_sorteada]
+        acomp_restantes = SUPERVISOR_MAX_POR_PESSOA - acomp_feitos
         
-    dados_sorteio_atual = {
-        "Data": data_hora_atual_str,
-        "Area": str(area_sorteada_row["Area"]),
-        "Subtipo": str(area_sorteada_row["Subtipo"]),
-        "Criticidade": str(area_sorteada_row["Criticidade"]),
-        "Avaliador": str(avaliadora_sorteada),
-        "Supervisor_Presente": str(supervisor_status)
-    }
-    
-    salvar_no_firebase(dados_sorteio_atual)
-    st.rerun()
+        if acomp_restantes <= 0:
+            supervisor_status = "Não"
+        elif acomp_restantes >= av_restantes:
+            supervisor_status = "Sim"
+        else:
+            supervisor_status = "Sim" if random.random() < 0.5 else "Não"
 
-st.markdown("---")
-st.subheader("📜 Histórico Geral")
-if not df_hist.empty:
-    colunas_ordenadas = ["Data", "Competência", "Area", "Subtipo", "Criticidade", "Avaliador", "Supervisor_Presente"]
-    df_exibicao = df_hist[colunas_ordenadas].sort_values(by="Data", ascending=False)
-    st.dataframe(df_exibicao, use_container_width=True)
-else:
-    st.info("Nenhum registro de sorteio encontrado no sistema cloud.")
+        vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
+        fixas_pendentes = [area for area in AREAS_FIXAS_OBRIGATORIAS if area not in areas_sorteadas_no_mes]
+        
+        if len(fixas_pendentes) >= vagas_restantes_no_mes and len(fixas_pendentes) > 0:
+            area_escolhida_nome = random.choice(fixas_pendentes)
+            area_sorteada_row = df_areas[df_areas["Area"] == area_escolhida_nome].iloc[0]
+        else:
+            areas_disponiveis_pool = df_areas[~df_areas["Area"].isin(areas_sorteadas_no_mes)]
+            if areas_disponiveis_pool.empty:
+                areas_disponiveis_pool = df_areas
+                
+            lista_final_sorteio = []
+            for _, row in areas_disponiveis_pool.iterrows():
+                crit = row["Criticidade"]
+                if row["Area"] in fixas_pendentes:
+                    lista_final_sorteio.append(row)
+                elif crit in METAS_COTAS and qtd_atual_cota[crit] < METAS_COTAS[crit]:
+                    lista_final_sorteio.append(row)
+                    
+            if not lista_final_sorteio:
+                st.warning("Todas as cotas do ciclo CADTERC atual foram preenchidas!")
+                st.stop()
+                
+            area_sorteada_row = random.choice(lista_final_sorteio)
+            
+        st.success("🎉 Sorteio Concluído!")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric(label="📍 Área Sorteada", value=area_sorteada_row["Area"])
+            st.caption(f"Tipo: {area_sorteada_row['Subtipo']} | Classificação: {area_sorteada_row['Criticidade']}")
+        with c2:
+            st.metric(label="👤 Avaliador(a)", value=avaliadora_sorteada)
+            st.markdown(f"**Acompanhamento do Supervisor:** {'👀 SIM' if supervisor_status == 'Sim' else '❌ Não'}")
+            
+        dados_sorteio_atual = {
+            "Data": data_hora_atual_str,
+            "Area": str(area_sorteada_row["Area"]),
+            "Subtipo": str(area_sorteada_row["Subtipo"]),
+            "Criticidade": str(area_sorteada_row["Criticidade"]),
+            "Avaliador": str(avaliadora_sorteada),
+            "Supervisor_Presente": str(supervisor_status)
+        }
+        
+        salvar_no_firebase(dados_sorteio_atual)
+        st.rerun()
+
+# ------------------------------------------------------------------------------
+# ABA 2: PAINEL DE VISTORIAS DA EQUIPE (NOVA FUNCIONALIDADE)
+# ------------------------------------------------------------------------------
+with aba_painel:
+    st.subheader("📊 Painel de Desempenho da Equipe")
+    
+    if df_hist.empty:
+        st.info("Ainda não existem vistorias registradas no banco de dados para exibir no painel.")
+    else:
+        # Seleção de Filtro de Período
+        opcao_filtro = st.radio(
+            "Filtrar Período de Análise:",
+            [f"Ciclo Atual ({competencia_atual})", "Todo o Histórico Acumulado"],
+            horizontal=True
+        )
+        
+        df_painel = df_mes.copy() if "Ciclo Atual" in opcao_filtro else df_hist.copy()
+        
+        # Resumo Executivo das Métricas do Período
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            st.metric("Total de Vistorias", len(df_painel))
+        with col_m2:
+            sup_total = len(df_painel[df_painel["Supervisor_Presente"] == "Sim"]) if "Supervisor_Presente" in df_painel.columns else 0
+            st.metric("Acompanhamentos de Supervisor", sup_total)
+        with col_m3:
+            criticas_total = len(df_painel[df_painel["Criticidade"] == "Crítica"]) if "Criticidade" in df_painel.columns else 0
+            st.metric("Vistorias em Áreas Críticas", criticas_total)
+            
+        st.markdown("---")
+        st.markdown("### 👤 Vistorias Realizadas por Avaliadora")
+        
+        # Cartões de Métricas Individuais
+        cols_p = st.columns(len(AVALIADORAS_TODAS))
+        for idx, av in enumerate(AVALIADORAS_TODAS):
+            with cols_p[idx]:
+                qtd_feita = len(df_painel[df_painel["Avaliador"] == av]) if "Avaliador" in df_painel.columns else 0
+                st.metric(
+                    label=f"👤 {av}", 
+                    value=f"{qtd_feita} / 12",
+                    delta=f"{(qtd_feita / AVALIADORAS_MAX) * 100:.0f}% da cota" if "Ciclo Atual" in opcao_filtro else None
+                )
+                
+                # Conta acompanhamentos por avaliadora
+                if "Supervisor_Presente" in df_painel.columns and "Avaliador" in df_painel.columns:
+                    sup_ind = len(df_painel[(df_painel["Avaliador"] == av) & (df_painel["Supervisor_Presente"] == "Sim")])
+                    st.caption(f"👀 Acompanhadas pelo Supervisor: {sup_ind}")
+                    
+        st.markdown("---")
+        st.markdown("### 📋 Distribuição de Vistorias por Criticidade de Área")
+        
+        # Tabela Cruzada de Desempenho
+        if "Avaliador" in df_painel.columns and "Criticidade" in df_painel.columns and not df_painel.empty:
+            tabela_cruzada = pd.crosstab(
+                df_painel["Avaliador"], 
+                df_painel["Criticidade"], 
+                margins=True, 
+                margins_name="Total Realizado"
+            )
+            st.dataframe(tabela_cruzada, use_container_width=True)
+            
+            # Gráfico Comparativo em Barras
+            st.markdown("#### 📈 Comparativo Gráfico de Trabalho")
+            df_chart = df_painel.groupby(["Avaliador", "Criticidade"]).size().unstack(fill_value=0)
+            st.bar_chart(df_chart)
+
+# ------------------------------------------------------------------------------
+# ABA 3: HISTÓRICO GERAL
+# ------------------------------------------------------------------------------
+with aba_historico:
+    st.subheader("📜 Histórico Completo de Sorteios")
+    if not df_hist.empty:
+        colunas_ordenadas = ["Data", "Competência", "Area", "Subtipo", "Criticidade", "Avaliador", "Supervisor_Presente"]
+        df_exibicao = df_hist[colunas_ordenadas].sort_values(by="Data", ascending=False)
+        st.dataframe(df_exibicao, use_container_width=True)
+    else:
+        st.info("Nenhum registro de sorteio encontrado no sistema cloud.")

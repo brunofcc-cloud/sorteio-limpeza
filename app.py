@@ -26,14 +26,14 @@ AREAS_FIXAS_OBRIGATORIAS = [
     "Divisão de Nutrição Dietética", 
     "Centro Cirúrgico Central", 
     "Centro Cirúrgico Ambulatorial", 
-    "UER", 
-    "UER Pediatrica"
+    "Unidade de Emergência Referenciada Adulto", 
+    "Unidade de Emergência Referenciada Infantil"
 ]
 
 # Dados de contingência
 DADOS_PADRAO = {
     "Area": [
-        "Divisão de Nutrição Dietética", "Centro Cirúrgico Central", "Centro Cirúrgico Ambulatorial", "UER", "UER Pediatrica",
+        "Divisão de Nutrição Dietética", "Centro Cirúrgico Central", "Centro Cirúrgico Ambulatorial", "Unidade de Emergência Referenciada Adulto", "Unidade de Emergência Referenciada Pediatrica",
         "UTI E2", "UTI D2", "Enfermaria de Pediatria", "Enfermaria de Psiquiatria",
         "Ambulatório de Oftalmo", "Ambulatório de Pediatria", "Vestiário Masculino", "Banheiro Alta Circulação", "Endoscopia",
         "Faturamento", "RH", "Diretoria Clinica"

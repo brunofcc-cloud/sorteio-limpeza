@@ -256,12 +256,17 @@ with aba_sorteio:
         else:
             supervisor_status = "Sim" if random.random() < 0.5 else "Não"
 
-        vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
+            vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
         fixas_pendentes = [area for area in AREAS_FIXAS_OBRIGATORIAS if area not in areas_sorteadas_no_mes]
-        
+
         if len(fixas_pendentes) >= vagas_restantes_no_mes and len(fixas_pendentes) > 0:
             area_escolhida_nome = random.choice(fixas_pendentes)
-            area_sorteada_row = df_areas[df_areas["Area"] == area_escolhida_nome].iloc[0]
+            df_filtrado = df_areas[df_areas["Area"] == area_escolhida_nome]
+            if not df_filtrado.empty:
+                area_sorteada_row = df_filtrado.iloc[0]
+            else:
+                st.warning(f"A área '{area_escolhida_nome}' não foi localizada na base de dados carregada.")
+                st.stop()
         else:
             areas_disponiveis_pool = df_areas[~df_areas["Area"].isin(areas_sorteadas_no_mes)]
             if areas_disponiveis_pool.empty:

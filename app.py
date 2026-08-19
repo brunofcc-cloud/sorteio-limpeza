@@ -243,6 +243,7 @@ with aba_sorteio:
         if not disponiveis_hoje:
             st.error("Limite mensal de sorteios para o ciclo atual atingido pelas avaliadoras ativas!")
             st.stop()
+            
         avaliadora_sorteada = random.choice(disponiveis_hoje)
         
         acomp_feitos = acompanhamentos_sup[avaliadora_sorteada]
@@ -256,7 +257,7 @@ with aba_sorteio:
         else:
             supervisor_status = "Sim" if random.random() < 0.5 else "Não"
 
-            vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
+        vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
         fixas_pendentes = [area for area in AREAS_FIXAS_OBRIGATORIAS if area not in areas_sorteadas_no_mes]
 
         if len(fixas_pendentes) >= vagas_restantes_no_mes and len(fixas_pendentes) > 0:
@@ -271,7 +272,7 @@ with aba_sorteio:
             areas_disponiveis_pool = df_areas[~df_areas["Area"].isin(areas_sorteadas_no_mes)]
             if areas_disponiveis_pool.empty:
                 areas_disponiveis_pool = df_areas
-                
+            
             lista_final_sorteio = []
             for _, row in areas_disponiveis_pool.iterrows():
                 crit = row["Criticidade"]
@@ -308,7 +309,7 @@ with aba_sorteio:
         st.rerun()
 
 # ------------------------------------------------------------------------------
-# ABA 2: PAINEL DE VISTORIAS DA EQUIPE (NOVA FUNCIONALIDADE)
+# ABA 2: PAINEL DE VISTORIAS DA EQUIPE
 # ------------------------------------------------------------------------------
 with aba_painel:
     st.subheader("📊 Painel de Desempenho da Equipe")
@@ -316,7 +317,6 @@ with aba_painel:
     if df_hist.empty:
         st.info("Ainda não existem vistorias registradas no banco de dados para exibir no painel.")
     else:
-        # Seleção de Filtro de Período
         opcao_filtro = st.radio(
             "Filtrar Período de Análise:",
             [f"Ciclo Atual ({competencia_atual})", "Todo o Histórico Acumulado"],
@@ -325,7 +325,6 @@ with aba_painel:
         
         df_painel = df_mes.copy() if "Ciclo Atual" in opcao_filtro else df_hist.copy()
         
-        # Resumo Executivo das Métricas do Período
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
             st.metric("Total de Vistorias", len(df_painel))
@@ -339,7 +338,6 @@ with aba_painel:
         st.markdown("---")
         st.markdown("### 👤 Vistorias Realizadas por Avaliadora")
         
-        # Cartões de Métricas Individuais
         cols_p = st.columns(len(AVALIADORAS_TODAS))
         for idx, av in enumerate(AVALIADORAS_TODAS):
             with cols_p[idx]:
@@ -350,7 +348,6 @@ with aba_painel:
                     delta=f"{(qtd_feita / AVALIADORAS_MAX) * 100:.0f}% da cota" if "Ciclo Atual" in opcao_filtro else None
                 )
                 
-                # Conta acompanhamentos por avaliadora
                 if "Supervisor_Presente" in df_painel.columns and "Avaliador" in df_painel.columns:
                     sup_ind = len(df_painel[(df_painel["Avaliador"] == av) & (df_painel["Supervisor_Presente"] == "Sim")])
                     st.caption(f"👀 Acompanhadas pelo Supervisor: {sup_ind}")
@@ -358,7 +355,6 @@ with aba_painel:
         st.markdown("---")
         st.markdown("### 📋 Distribuição de Vistorias por Criticidade de Área")
         
-        # Tabela Cruzada de Desempenho
         if "Avaliador" in df_painel.columns and "Criticidade" in df_painel.columns and not df_painel.empty:
             tabela_cruzada = pd.crosstab(
                 df_painel["Avaliador"], 
@@ -368,7 +364,6 @@ with aba_painel:
             )
             st.dataframe(tabela_cruzada, use_container_width=True)
             
-            # Gráfico Comparativo em Barras
             st.markdown("#### 📈 Comparativo Gráfico de Trabalho")
             df_chart = df_painel.groupby(["Avaliador", "Criticidade"]).size().unstack(fill_value=0)
             st.bar_chart(df_chart)

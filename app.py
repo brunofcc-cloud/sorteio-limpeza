@@ -80,8 +80,18 @@ def obter_mes_competencia(data_str):
         return dt.strftime("%Y-%m")
 
 # ==============================================================================
-# 3. CONEXÃO E FUNÇÕES DO BANCO DE DADOS (FIREBASE)
+# 3. CONEXÃO E FUNÇÕES DE TRATAMENTO / FIREBASE
 # ==============================================================================
+def padronizar_dados(df):
+    if "Area" in df.columns:
+        df["Area"] = df["Area"].astype(str).str.strip()
+        mapeamento = {
+            "UER": "Unidade de Emergência Referenciada Adulto",
+            "UER Pediatrica": "Unidade de Emergência Referenciada Pediátrica",
+            "UER Pediátrica": "Unidade de Emergência Referenciada Pediátrica"
+        }
+        df["Area"] = df["Area"].replace(mapeamento)
+    return df
 if not firebase_admin._apps:
     try:
         firebase_secrets = dict(st.secrets["firebase"])
@@ -161,11 +171,13 @@ st.sidebar.markdown("---")
 st.sidebar.header("📁 Base de Dados")
 
 df_areas = carregar_areas_do_firebase()
+df_areas = padronizar_dados(df_areas)
 
 arquivo_upload = st.sidebar.file_uploader("Suba uma nova planilha para atualizar (Colunas: Area, Subtipo, Criticidade)", type=["csv", "xlsx"])
 
 if arquivo_upload is not None:
     df_novo = pd.read_csv(arquivo_upload) if arquivo_upload.name.endswith('.csv') else pd.read_excel(arquivo_upload)
+    df_novo = padronizar_dados(df_novo)
     
     if "Area" in df_novo.columns and "Subtipo" in df_novo.columns:
         if "Criticidade" not in df_novo.columns:

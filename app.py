@@ -281,22 +281,55 @@ with aba_sorteio:
                 st.warning(f"A área '{area_escolhida_nome}' não foi localizada na base de dados carregada.")
                 st.stop()
         else:
-            areas_disponiveis_pool = df_areas[~df_areas["Area"].isin(areas_sorteadas_no_mes)]
+            # 1. Obtém todas as áreas já sorteadas na história do sistema (não apenas do mês)
+            areas_sorteadas_historico = (
+                df_hist["Area"].unique() if not df_hist.empty else []
+            )
+
+            # 2. Filtra áreas da base que AINDA NÃO foram sorteadas na história
+            areas_disponiveis_pool = df_areas[
+                ~df_areas["Area"].isin(areas_sorteadas_historico)
+            ]
+
+            # 3. SE 100% das áreas já foram contempladas, RESETA o pool (recomeça a fila!)
             if areas_disponiveis_pool.empty:
-                areas_disponiveis_pool = df_areas
-            
+                st.info(
+                    "🔄 100% das áreas do hospital já foram contempladas no histórico! Reiniciando ciclo de cobertura..."
+                )
+                areas_disponiveis_pool = df_areas.copy()
+
+            # 4. Aplica as cotas do CADTERC sobre as áreas disponíveis no pool
             lista_final_sorteio = []
             for _, row in areas_disponiveis_pool.iterrows():
                 crit = row["Criticidade"]
                 if row["Area"] in fixas_pendentes:
                     lista_final_sorteio.append(row)
-                elif crit in METAS_COTAS and qtd_atual_cota[crit] < METAS_COTAS[crit]:
+                elif (
+                    crit in METAS_COTAS
+                    and qtd_atual_cota[crit] < METAS_COTAS[crit]
+                ):
                     lista_final_sorteio.append(row)
-                    
+
+            # Se as disponíveis no pool não preencherem a cota (ex: esgotaram as Não-Críticas no pool),
+            # recicla as áreas dessa criticidade para não travar a meta do mês
             if not lista_final_sorteio:
-                st.warning("Todas as cotas do ciclo CADTERC atual foram preenchidas!")
+                st.info(
+                    "🔄 Reciclando áreas da categoria para cumprir a meta do ciclo..."
+                )
+                for _, row in df_areas.iterrows():
+                    crit = row["Criticidade"]
+                    if (
+                        crit in METAS_COTAS
+                        and qtd_atual_cota[crit] < METAS_COTAS[crit]
+                    ):
+                        lista_final_sorteio.append(row)
+
+            if not lista_final_sorteio:
+                st.warning(
+                    "Todas as cotas do ciclo CADTERC atual foram preenchidas!"
+                )
                 st.stop()
-                
+
             area_sorteada_row = random.choice(lista_final_sorteio)
             
         st.success("🎉 Sorteio Concluído!")

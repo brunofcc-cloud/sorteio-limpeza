@@ -11,9 +11,8 @@ from firebase_admin import credentials, firestore
 AVALIADORAS_TODAS = ["Fatima", "Lindalva", "Rosana"]
 SUPERVISOR_MAX_POR_PESSOA = 4
 
-# Metas Globais do Contrato (36 no total e 12 por pessoa)
+# Metas Globais do Contrato (36 no total)
 TOTAL_AVALIACOES_MES = 36
-AVALIADORAS_MAX = 12  # Divisão exata: 12 para cada uma das 3 avaliadoras
 
 # Definição exata das Cotas por Criticidade (17 + 10 + 9 = 36)
 METAS_COTAS = {
@@ -92,6 +91,7 @@ def padronizar_dados(df):
         }
         df["Area"] = df["Area"].replace(mapeamento)
     return df
+
 if not firebase_admin._apps:
     try:
         firebase_secrets = dict(st.secrets["firebase"])
@@ -251,15 +251,29 @@ with aba_sorteio:
     st.subheader("🎲 Sorteio Inteligente do Dia")
 
     if st.button("Realizar Sorteio", type="primary"):
-        disponiveis_hoje = [av for av in avaliadoras_ativas if contagem_avaliadoras[av] < AVALIADORAS_MAX]
-        if not disponiveis_hoje:
-            st.error("Limite mensal de sorteios para o ciclo atual atingido pelas avaliadoras ativas!")
+        if total_mes >= TOTAL_AVALIACOES_MES:
+            st.warning("Meta global de 36 avaliações do ciclo já foi atingida!")
             st.stop()
-            
+
+        if not avaliadoras_ativas:
+            st.error("Nenhuma avaliadora marcada como disponível na barra lateral!")
+            st.stop()
+
+        # Redistribui dinamicamente o teto mensal entre as pessoas presentes
+        vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
+        cota_dinamica_por_ativa = TOTAL_AVALIACOES_MES / len(avaliadoras_ativas)
+
+        # Prioriza quem tem menos vistorias no mês entre as presentes (evita travar por ausência)
+        min_vistorias_ativas = min(contagem_avaliadoras[av] for av in avaliadoras_ativas)
+        disponiveis_hoje = [
+            av for av in avaliadoras_ativas 
+            if contagem_avaliadoras[av] == min_vistorias_ativas
+        ]
+        
         avaliadora_sorteada = random.choice(disponiveis_hoje)
         
         acomp_feitos = acompanhamentos_sup[avaliadora_sorteada]
-        av_restantes = AVALIADORAS_MAX - contagem_avaliadoras[avaliadora_sorteada]
+        av_restantes = max(1, int(round(cota_dinamica_por_ativa)) - contagem_avaliadoras[avaliadora_sorteada])
         acomp_restantes = SUPERVISOR_MAX_POR_PESSOA - acomp_feitos
         
         if acomp_restantes <= 0:
@@ -269,68 +283,65 @@ with aba_sorteio:
         else:
             supervisor_status = "Sim" if random.random() < 0.5 else "Não"
 
-        vagas_restantes_no_mes = TOTAL_AVALIACOES_MES - total_mes
+        # ----------------------------------------------------------------------
+        # LÓGICA DE SELEÇÃO PROPORCIONAL DE CRITICIDADE E SEM REPETIÇÃO
+        # ----------------------------------------------------------------------
         fixas_pendentes = [area for area in AREAS_FIXAS_OBRIGATORIAS if area not in areas_sorteadas_no_mes]
 
-        if len(fixas_pendentes) >= vagas_restantes_no_mes and len(fixas_pendentes) > 0:
-            area_escolhida_nome = random.choice(fixas_pendentes)
-            df_filtrado = df_areas[df_areas["Area"] == area_escolhida_nome]
-            if not df_filtrado.empty:
-                area_sorteada_row = df_filtrado.iloc[0]
-            else:
-                st.warning(f"A área '{area_escolhida_nome}' não foi localizada na base de dados carregada.")
-                st.stop()
+        # Calcula quantas vagas faltam em cada cota de criticidade
+        vagas_por_crit = {
+            crit: max(0, METAS_COTAS[crit] - qtd_atual_cota[crit])
+            for crit in METAS_COTAS
+        }
+
+        if sum(vagas_por_crit.values()) <= 0:
+            st.warning("Todas as cotas do ciclo CADTERC atual foram preenchidas!")
+            st.stop()
+
+        # Sorteia a criticidade ponderada pelas vagas restantes (evita acumular Críticas no fim do mês)
+        criticidades_possiveis = [c for c, v in vagas_por_crit.items() if v > 0]
+        pesos_criticidade = [vagas_por_crit[c] for c in criticidades_possiveis]
+        criticidade_escolhida = random.choices(criticidades_possiveis, weights=pesos_criticidade, k=1)[0]
+
+        # Contagem histórica de visitas por área (para nunca repetir antes de esgotar 100%)
+        areas_hist_lista = df_hist["Area"].tolist() if not df_hist.empty else []
+        contagem_historico = pd.Series(areas_hist_lista).value_counts()
+
+        df_base = df_areas.copy()
+        df_base["vezes_sorteada"] = df_base["Area"].map(contagem_historico).fillna(0).astype(int)
+
+        # NUNCA repete uma área já sorteada dentro do mesmo ciclo mensal
+        df_nao_sorteadas_mes = df_base[~df_base["Area"].isin(areas_sorteadas_no_mes)]
+        if df_nao_sorteadas_mes.empty:
+            df_nao_sorteadas_mes = df_base.copy()
+
+        # Se a criticidade sorteada foi Crítica e ainda há áreas fixas obrigatórias pendentes,
+        # distribui as fixas proporcionalmente ao longo de todo o mês (não só nos últimos 5 dias)
+        vagas_criticas_restantes = vagas_por_crit["Crítica"]
+        if (
+            criticidade_escolhida == "Crítica"
+            and len(fixas_pendentes) > 0
+            and random.random() < (len(fixas_pendentes) / max(1, vagas_criticas_restantes))
+        ):
+            df_candidatas = df_nao_sorteadas_mes[df_nao_sorteadas_mes["Area"].isin(fixas_pendentes)]
         else:
-            # 1. Obtém todas as áreas já sorteadas na história do sistema (não apenas do mês)
-            areas_sorteadas_historico = (
-                df_hist["Area"].unique() if not df_hist.empty else []
-            )
+            # Filtra pela criticidade escolhida, excluindo fixas já realizadas no mês
+            df_candidatas = df_nao_sorteadas_mes[df_nao_sorteadas_mes["Criticidade"] == criticidade_escolhida]
+            if criticidade_escolhida == "Crítica":
+                # Evita sortear áreas fixas repetidas e reserva o slot proporcional das fixas
+                df_comuns = df_candidatas[~df_candidatas["Area"].isin(AREAS_FIXAS_OBRIGATORIAS)]
+                if not df_comuns.empty and (vagas_criticas_restantes > len(fixas_pendentes)):
+                    df_candidatas = df_comuns
 
-            # 2. Filtra áreas da base que AINDA NÃO foram sorteadas na história
-            areas_disponiveis_pool = df_areas[
-                ~df_areas["Area"].isin(areas_sorteadas_historico)
-            ]
+        # Fallback caso alguma categoria específica esteja vazia na base
+        if df_candidatas.empty:
+            df_candidatas = df_nao_sorteadas_mes.copy()
 
-            # 3. SE 100% das áreas já foram contempladas, RESETA o pool (recomeça a fila!)
-            if areas_disponiveis_pool.empty:
-                st.info(
-                    "🔄 100% das áreas do hospital já foram contempladas no histórico! Reiniciando ciclo de cobertura..."
-                )
-                areas_disponiveis_pool = df_areas.copy()
+        # Prioriza estritamente as áreas com MENOR número de visitas no histórico global (0 visitas primeiro)
+        min_visitas = df_candidatas["vezes_sorteada"].min()
+        df_menor_frequencia = df_candidatas[df_candidatas["vezes_sorteada"] == min_visitas]
 
-            # 4. Aplica as cotas do CADTERC sobre as áreas disponíveis no pool
-            lista_final_sorteio = []
-            for _, row in areas_disponiveis_pool.iterrows():
-                crit = row["Criticidade"]
-                if row["Area"] in fixas_pendentes:
-                    lista_final_sorteio.append(row)
-                elif (
-                    crit in METAS_COTAS
-                    and qtd_atual_cota[crit] < METAS_COTAS[crit]
-                ):
-                    lista_final_sorteio.append(row)
-
-            # Se as disponíveis no pool não preencherem a cota (ex: esgotaram as Não-Críticas no pool),
-            # recicla as áreas dessa criticidade para não travar a meta do mês
-            if not lista_final_sorteio:
-                st.info(
-                    "🔄 Reciclando áreas da categoria para cumprir a meta do ciclo..."
-                )
-                for _, row in df_areas.iterrows():
-                    crit = row["Criticidade"]
-                    if (
-                        crit in METAS_COTAS
-                        and qtd_atual_cota[crit] < METAS_COTAS[crit]
-                    ):
-                        lista_final_sorteio.append(row)
-
-            if not lista_final_sorteio:
-                st.warning(
-                    "Todas as cotas do ciclo CADTERC atual foram preenchidas!"
-                )
-                st.stop()
-
-            area_sorteada_row = random.choice(lista_final_sorteio)
+        area_sorteada_row = df_menor_frequencia.sample(n=1).iloc[0]
             
         st.success("🎉 Sorteio Concluído!")
         c1, c2 = st.columns(2)
@@ -383,14 +394,15 @@ with aba_painel:
         st.markdown("---")
         st.markdown("### 👤 Vistorias Realizadas por Avaliadora")
         
+        meta_ref = max(1, int(round(TOTAL_AVALIACOES_MES / max(1, len(avaliadoras_ativas)))))
         cols_p = st.columns(len(AVALIADORAS_TODAS))
         for idx, av in enumerate(AVALIADORAS_TODAS):
             with cols_p[idx]:
                 qtd_feita = len(df_painel[df_painel["Avaliador"] == av]) if "Avaliador" in df_painel.columns else 0
                 st.metric(
                     label=f"👤 {av}", 
-                    value=f"{qtd_feita} / 12",
-                    delta=f"{(qtd_feita / AVALIADORAS_MAX) * 100:.0f}% da cota" if "Ciclo Atual" in opcao_filtro else None
+                    value=f"{qtd_feita} / {meta_ref}", 
+                    delta=f"{(qtd_feita / meta_ref) * 100:.0f}% da cota" if "Ciclo Atual" in opcao_filtro else None
                 )
                 
                 if "Supervisor_Presente" in df_painel.columns and "Avaliador" in df_painel.columns:
